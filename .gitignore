@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/
+
+# 数值梯度交叉校验生成的临时模型（[784,3,10]，不是训练结果）
+mnist_numeric_crosscheck
+
+# 本地临时权重
+*.pkl
