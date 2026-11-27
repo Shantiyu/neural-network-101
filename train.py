@@ -1,22 +1,22 @@
 from neural_network import network
+from layers_affine import *
+from layers_convolution import *
+from layer_util import *
 from mnist_loader import *
+import matplotlib.pyplot as plt
 import os
-from numerical_gradient import *
+from pathlib import Path
 
 class mnist_network_trainer:
-    def __init__(self, model_name : str, model_size : list[int]):
+    def __init__(self, model_name : str, model_layers : layer_sequence):
         self.model_name = model_name
+        self.loss_cache_path = Path(f"loss_cache_{Path(model_name).stem}.txt")
         if os.path.exists(model_name):  
             print("Model exist! loading.")
             self.network = network.deserialize(model_name)
         else:
-            self.network = network(model_size)
-            self.network.random_init()
-            self.network.serialize(model_name)
-
-        self.net_mut = copy.deepcopy(self.network)
-        self.d_weight = copy.deepcopy(self.network.weight)
-        self.d_shift = copy.deepcopy(self.network.shift)
+            self.network = network(model_layers)
+            # 不在构造时保存，避免训练中断后留下一个"看起来存在"的未训练模型
 
     def save_training_data(self):
         self.network.serialize(self.model_name)
@@ -37,41 +37,67 @@ class mnist_network_trainer:
         self.minibatch_data = self.data[batch_indexes]
         self.minibatch_labels = self.labels[batch_indexes]
 
-    # 用数值微分和反向传播梯度交叉比对检查二者算法正确性
-    def backward_gradient_crosscheck(self):
-        q = self.network.forward(self.minibatch_data, True)
-        # 1 - based
-        _, dl_dw_b, dl_db_b = self.network.backward(self.minibatch_labels)
-        # 0 - based
-        dl_dw_g, dl_db_g = numerical_gradient(self.minibatch_data, self.minibatch_labels, self.network, self.net_mut)
-        def relative_error(analytic, numeric, eps = 1e-8):
-            return np.max(np.abs(analytic - numeric) / (np.abs(analytic) + np.abs(numeric) + eps))
-        for i in range(len(self.network.weight)):
-            ew = relative_error(dl_dw_b[i + 1], dl_dw_g[i])
-            eb = relative_error(dl_db_b[i + 1], dl_db_g[i])
-            print(f"Layer {i}: dW relative error = {ew:.3e}   db relative error = {eb:.3e}")
+    def step_train(self, input : np.ndarray, labels : np.ndarray, step_k : float) -> float:
+        return self.network.step_train(input, labels, step_k)
 
+    @staticmethod
+    def _last_loss_index(path: Path) -> int:
+        """读取已有 cache 的最后一个 index；空文件或不存在时返回 0。"""
+        if not path.exists():
+            return 0
 
-    def step_train(self, step_k : float):
-        # numerical_gradient(self.minibatch_data, self.minibatch_labels, self.network, self.net_mut, self.d_weight, self.d_shift)
-        # for i in range(len(self.d_weight)):
-        #     self.network.weight[i] -= step_k * self.d_weight[i]
-        # for i in range(len(self.d_shift)):
-        #     self.network.shift[i] -= step_k * self.d_shift[i]
+        last_index = 0
+        with open(path, "r", encoding="utf-8") as cache:
+            for line in cache:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                try:
+                    last_index = int(line.split(",", 1)[0])
+                except ValueError:
+                    continue
+        return last_index
 
-        q = self.network.forward(self.minibatch_data, True)
-        #loss = cross_entropy_error(q, self.minibatch_labels)
-        dl_dz, dl_dw, dl_db = self.network.backward(self.minibatch_labels)
-        self.network.adjust(step_k, dl_dw, dl_db)
-
-    def train(self, step_count = 1000, step_k = 0.0001):
+    def train(self, step_count = 1000, step_k = 0.03, show_loss_plot=False):
         print("Training start")
-        for i in range(step_count):
-            self.generate_mini_batch()
-            self.step_train(step_k)
-            if (i % 20 == 0):
-                loss = evaluate_loss(self.network, self.minibatch_data, self.minibatch_labels)
-                print(f"Training count {(i + 1)} | Loss : {loss}")
+        start_index = self._last_loss_index(self.loss_cache_path)
+        mode = "a" if start_index > 0 else "w"
+        if start_index > 0:
+            print(f"Appending to {self.loss_cache_path} from index {start_index + 1}")
+
+        loss_list = []
+        with open(self.loss_cache_path, mode, encoding="utf-8") as loss_file:
+            if mode == "w":
+                loss_file.write(f"# model={self.model_name}, lr={step_k}\n")
+                loss_file.write("# index,loss\n")
+            else:
+                loss_file.write(f"# resume lr={step_k}\n")
+
+            for i in range(step_count):
+                self.generate_mini_batch()
+                loss = self.step_train(self.minibatch_data, self.minibatch_labels, step_k)
+                loss_list.append(loss)
+                index = start_index + i + 1
+                loss_file.write(f"{index},{loss:.8f}\n")
+                loss_file.flush()
+                print(f"Training count {index} | Loss : {loss}")
+                if i % 100 == 0:
+                    self.network.serialize(self.model_name)
+                    print("Checkpoint saved.")
+        print(f"Loss cache saved to {self.loss_cache_path}")
+        if show_loss_plot:
+            self.plot_loss(loss_list, start_index)
+
+    def plot_loss(self, loss_list, start_index=0):
+        plt.figure(figsize = (10, 5))
+        steps = range(start_index + 1, start_index + len(loss_list) + 1)
+        plt.plot(steps, loss_list, color = 'tab:blue', linewidth = 1.5)
+        plt.title(f"Training Loss - {self.model_name}")
+        plt.xlabel("Training Step")
+        plt.ylabel("Loss")
+        plt.grid(True, linestyle = '--', alpha = 0.5)
+        plt.tight_layout()
+        plt.show()
 
     def examine(self):
         print(f"Examining data set (count : {self.labels.shape[0]})")
@@ -82,15 +108,45 @@ class mnist_network_trainer:
         acc = correct.mean()
         print(f"Accuracy : {acc}")
 
-
 if __name__ == '__main__':
-    trainer = mnist_network_trainer("mnist_numeric_crosscheck", [784, 3, 10])
-    # trainer.load_mnist_train_dataset()
-    # trainer.train()
-    # trainer.save_training_data()
-    # trainer.examine()
+    layers = layer_sequence(
+        reshape(1, 28, 28),                      # (N, 784) -> (N, 1, 28, 28) # type: ignore
+
+        convolution(32, 1, 28, 28, 3, 3, 1, 1),  # -> (N, 32, 28, 28)
+        relu(),
+        convolution(32, 32, 28, 28, 3, 3, 1, 1),
+        relu(),
+        pooling_max(2, 2, 2),                    # -> (N, 32, 14, 14)
+
+        convolution(64, 32, 14, 14, 3, 3, 1, 1),
+        relu(),
+        convolution(64, 64, 14, 14, 3, 3, 1, 1),
+        relu(),
+        pooling_max(2, 2, 2),                    # -> (N, 64, 7, 7)
+
+        convolution(128, 64, 7, 7, 3, 3, 1, 1),
+        relu(),
+        pooling_max(2, 2, 2),                    # -> (N, 128, 3, 3)
+
+        flatten(),                               # -> (N, 128 * 3 * 3) = (N, 1152)
+        affine(1152, 128),
+        relu(),
+        affine(128, 10),
+        softmax_with_cee(),
+    )
+    trainer = mnist_network_trainer("models/mnist_conv_02", layers)
+    trainer.load_mnist_train_dataset()
+    trainer.train(1000, 0.03, True)
+    trainer.save_training_data()
 
     trainer.load_mnist_examine_dataset()
-    trainer.generate_mini_batch()
-    trainer.backward_gradient_crosscheck()
+    trainer.examine()
+
+# layers = layer_sequence(
+#         affine(784, 500),
+#         relu(),
+#         affine(500, 10),
+#         softmax_with_cee()
+#     )
+
 
