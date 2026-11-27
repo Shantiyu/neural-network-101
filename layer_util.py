@@ -4,8 +4,34 @@ from numpy.lib.stride_tricks import sliding_window_view
 from typing import Optional, Tuple
 
 class layer(ABC):
+    # 只用于反向传播/显示的中间张量，不应该进入 pickle。
+    _CACHE_ATTRS = frozenset({
+        "mask",
+        "x_cache",
+        "probs",
+        "t",
+        "loss",
+        "X_p_cache",
+        "X_shape",
+        "max_abs_indices",
+        "output_shape",
+        "input_shape",
+        "_grad_cache",
+    })
+
     def __init__(self):
         self.training = True
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        for name in self._CACHE_ATTRS:
+            state.pop(name, None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        for name in self._CACHE_ATTRS:
+            self.__dict__.pop(name, None)
 
     @abstractmethod
     def forward(self, x: np.ndarray, use_cache: bool = True) -> np.ndarray:
@@ -38,6 +64,10 @@ class layer_sequence(layer):
         super().__init__()
         self.layers = list(layers)
         self._grad_cache = [] 
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self._grad_cache = []
 
     def forward(self, x: np.ndarray, t: np.ndarray | None = None, use_cache: bool = True) -> np.ndarray:
         for l in self.layers:

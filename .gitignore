@@ -18,8 +18,9 @@ mnist_numeric_crosscheck
 # 本地临时权重
 *.pkl
 
-# 训练生成的模型（体积较大，不提交到 Git）
-models/
+# 训练生成的模型（只提交去掉缓存后的 mnist_conv_02）
+models/*
+!models/mnist_conv_02
 
 # 训练生成的 loss 记录
 loss_cache_*.txt
